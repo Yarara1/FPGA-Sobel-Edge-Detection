@@ -1,0 +1,336 @@
+"""
+compare_hw_output.py
+
+Compare the Sobel-filtered output produced by the FPGA against
+a reference PNG image.
+
+FPGA BRAM output format:
+    - 32-bit little-endian words
+    - grayscale pixel stored in bits [7:0]
+
+FPGA output resolution:
+    100 x 100
+
+The original/reference image may be 102x102. If so, its one-pixel
+border is removed to match the 100x100 valid-convolution output.
+
+Metrics:
+    - mismatched pixels
+    - maximum absolute difference
+    - mean absolute difference
+
+The script also displays:
+    - FPGA output
+    - reference output
+    - absolute-difference image
+"""
+
+from pathlib import Path
+import argparse
+import struct
+
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+
+
+OUTPUT_WIDTH = 100
+OUTPUT_HEIGHT = 100
+NUM_PIXELS = OUTPUT_WIDTH * OUTPUT_HEIGHT
+
+
+def read_hw_output(bin_path: Path):
+    """
+    Read FPGA BRAM output stored as 32-bit little-endian words.
+    Extract bits [7:0] from each word as the grayscale pixel.
+    """
+
+    with open(bin_path, "rb") as f:
+        raw = f.read()
+
+    if len(raw) % 4 != 0:
+        raise ValueError(
+            "BRAM binary size must be divisible by 4 bytes."
+        )
+
+    words = struct.unpack(
+        "<" + "I" * (len(raw) // 4),
+        raw
+    )
+
+    if len(words) < NUM_PIXELS:
+        raise ValueError(
+            f"Expected at least {NUM_PIXELS} BRAM words, "
+            f"but found {len(words)}."
+        )
+
+    pixels = np.array(
+        [word & 0xFF for word in words[:NUM_PIXELS]],
+        dtype=np.uint8
+    )
+
+    image = pixels.reshape(
+        (OUTPUT_HEIGHT, OUTPUT_WIDTH)
+    )
+
+    return raw, pixels, image
+
+
+def read_reference_image(image_path: Path):
+    """
+    Load reference image as grayscale.
+
+    A 102x102 reference is cropped by one pixel on each side
+    because a valid 3x3 Sobel operation produces a 100x100 result.
+    """
+
+    image = Image.open(image_path).convert("L")
+
+    print(f"Original reference size: {image.size}")
+
+    # 102x102 input -> 100x100 valid 3x3 convolution output
+    if image.size == (102, 102):
+        print(
+            "Reference is 102x102. "
+            "Cropping one-pixel border to obtain 100x100."
+        )
+
+        image = image.crop(
+            (1, 1, 101, 101)
+        )
+
+    if image.size != (100, 100):
+        print(
+            f"Warning: reference size is {image.size}. "
+            "Resizing to 100x100 for comparison."
+        )
+
+        image = image.resize(
+            (100, 100),
+            Image.Resampling.NEAREST
+        )
+
+    return np.array(
+        image,
+        dtype=np.uint8
+    )
+
+
+def compare_images(hw_img, reference_img):
+    """
+    Calculate pixel-wise comparison metrics.
+    """
+
+    diff = (
+        hw_img.astype(np.int16)
+        - reference_img.astype(np.int16)
+    )
+
+    abs_diff = np.abs(diff)
+
+    num_mismatch = np.count_nonzero(abs_diff)
+    max_diff = int(abs_diff.max())
+    mean_diff = float(abs_diff.mean())
+
+    return diff, abs_diff, num_mismatch, max_diff, mean_diff
+
+
+def print_mismatches(
+    hw_img,
+    reference_img,
+    diff,
+    abs_diff,
+    max_entries=20
+):
+    """
+    Print the first mismatched pixel locations.
+    """
+
+    ys, xs = np.where(abs_diff != 0)
+
+    if len(ys) == 0:
+        return
+
+    print(f"\nFirst {min(max_entries, len(ys))} mismatches:")
+
+    for k in range(min(max_entries, len(ys))):
+        y = ys[k]
+        x = xs[k]
+
+        index = y * OUTPUT_WIDTH + x
+
+        print(
+            f"idx={index:5d}, "
+            f"row={y:3d}, "
+            f"col={x:3d}, "
+            f"HW={hw_img[y, x]:02X}, "
+            f"REF={reference_img[y, x]:02X}, "
+            f"diff={diff[y, x]:4d}"
+        )
+
+
+def display_results(
+    hw_img,
+    reference_img,
+    abs_diff
+):
+    """
+    Display FPGA, reference, and difference images.
+    """
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(
+        hw_img,
+        cmap="gray",
+        vmin=0,
+        vmax=255
+    )
+    plt.title("FPGA BRAM Sobel Output")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(
+        reference_img,
+        cmap="gray",
+        vmin=0,
+        vmax=255
+    )
+    plt.title("Reference Sobel Output")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(
+        abs_diff,
+        cmap="gray"
+    )
+    plt.title("Absolute Pixel Difference")
+    plt.axis("off")
+    plt.tight_layout()
+    plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compare FPGA Sobel output against reference PNG."
+    )
+
+    parser.add_argument(
+        "hardware",
+        type=Path,
+        help="FPGA BRAM binary output."
+    )
+
+    parser.add_argument(
+        "reference",
+        type=Path,
+        help="Reference Sobel output PNG."
+    )
+
+    parser.add_argument(
+        "--max-mismatches",
+        type=int,
+        default=20,
+        help="Maximum number of mismatches to print."
+    )
+
+    args = parser.parse_args()
+
+    # -------------------------------------------------
+    # FPGA output
+    # -------------------------------------------------
+
+    raw, hw_pixels, hw_img = read_hw_output(
+        args.hardware
+    )
+
+    print("\n--- FPGA Output ---")
+    print(f"BRAM raw bytes: {len(raw)}")
+    print(f"Pixels: {len(hw_pixels)}")
+    print(f"Image shape: {hw_img.shape}")
+    print(f"Min: {hw_img.min()}")
+    print(f"Max: {hw_img.max()}")
+
+    print(
+        "First 20 pixels:",
+        [f"{pixel:02X}" for pixel in hw_pixels[:20]]
+    )
+
+    # -------------------------------------------------
+    # Reference output
+    # -------------------------------------------------
+
+    reference_img = read_reference_image(
+        args.reference
+    )
+
+    print("\n--- Reference Output ---")
+    print(f"Image shape: {reference_img.shape}")
+    print(f"Min: {reference_img.min()}")
+    print(f"Max: {reference_img.max()}")
+
+    # -------------------------------------------------
+    # Compare
+    # -------------------------------------------------
+
+    (
+        diff,
+        abs_diff,
+        num_mismatch,
+        max_diff,
+        mean_diff
+    ) = compare_images(
+        hw_img,
+        reference_img
+    )
+
+    print("\n--- Verification Result ---")
+
+    print(
+        f"Mismatched pixels: "
+        f"{num_mismatch} / {NUM_PIXELS}"
+    )
+
+    print(f"Maximum difference: {max_diff}")
+    print(f"Mean difference: {mean_diff:.6f}")
+
+    if num_mismatch == 0:
+        print(
+            "\nPASS: FPGA output matches "
+            "the reference image exactly."
+        )
+
+    else:
+        mismatch_percentage = (
+            100.0 * num_mismatch / NUM_PIXELS
+        )
+
+        print(
+            f"Mismatch percentage: "
+            f"{mismatch_percentage:.4f}%"
+        )
+
+        print_mismatches(
+            hw_img,
+            reference_img,
+            diff,
+            abs_diff,
+            args.max_mismatches
+        )
+
+    # -------------------------------------------------
+    # Visualization
+    # -------------------------------------------------
+
+    display_results(
+        hw_img,
+        reference_img,
+        abs_diff
+    )
+
+
+if __name__ == "__main__":
+    main()
