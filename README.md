@@ -523,51 +523,6 @@ Correcting the linker configuration allowed the ELF to execute correctly on the 
 
 ---
 
-## Repository Structure
-
-```text
-FPGA-Sobel-Edge-Detection/
-│
-├── README.md
-├── .gitignore
-├── LICENSE
-│
-├── rtl/
-│   ├── image_top.v
-│   ├── image_cntrl.v
-│   ├── sobel_core.v
-│   └── ip/
-│       ├── BRAM1.xci
-│       └── BRAM2.xci
-│
-├── software/
-│   └── vitis/
-│       └── main.c
-│
-├── python/
-│   ├── txt_to_wordspaced_bin.py
-│   ├── bram_hex_to_image.py
-│   ├── bram_bin_to_image.py
-│   ├── compare_hw_output.py
-│   └── requirements.txt
-│
-├── constraints/
-│   └── Arty-A7-100-Master.xdc
-│
-├── data/
-│   ├── input/
-│   ├── binary/
-│   ├── reference/
-│   └── output/
-│
-└── results/
-    ├── timing_summary.txt
-    ├── utilization_summary.txt
-    └── power_summary.txt
-```
-
----
-
 ## Running the Python Utilities
 
 Install the required Python libraries:
